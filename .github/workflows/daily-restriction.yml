@@ -2,8 +2,8 @@ name: Daily Beijing Restriction Reminder
 
 on:
   schedule:
-    - cron: '30 23 * * *'   # UTC 23:30 = 北京时间 7:30
-  workflow_dispatch:        # 可选，允许手动触发测试
+    - cron: '0 20 * * *'   # UTC 20:00 = 北京时间 4:00（次日凌晨）
+  workflow_dispatch:        # 允许手动触发
 
 jobs:
   check-and-alert:
@@ -20,7 +20,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install -r requirements.txt
+          pip install requests
 
       - name: Run restriction check
         env:
@@ -28,10 +28,3 @@ jobs:
           PLATE_NUMBER: ${{ secrets.PLATE_NUMBER }}
         run: |
           python main.py
-
-      - name: Send notification via Bark
-        if: always()
-        run: |
-          curl -X POST "https://api.day.app/${{ secrets.BARK_DEVICE_KEY }}" \
-            -H "Content-Type: application/json" \
-            -d '{"body": "限行提醒任务已完成"}'
