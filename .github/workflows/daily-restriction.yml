@@ -24,7 +24,7 @@ jobs:
 
       - name: Run restriction check
         env:
-          BARK_DEVICE_KEY: ${{ secrets.BARK_DEVICE_KEY }}
+          BARK_KEY: ${{ secrets.BARK_KEY }}
           PLATE_NUMBER: ${{ secrets.PLATE_NUMBER }}
         run: |
           python main.py
