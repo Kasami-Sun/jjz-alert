@@ -1,273 +1,143 @@
-# 初始化日志（需在其他自定义模块之前导入）
-import jjz_alert.base.logger  # noqa: F401
+"""
+北京限行提醒脚本
+功能：
+1. 手动触发：运行后立即查询今天限行并推送
+2. 自动触发：每天凌晨自动运行一次
+"""
+import requests
+from datetime import datetime, date
+import json
+import os
 
-import asyncio
-import logging
-import signal
-import sys
+# ========== 配置区 ==========
+# 建议通过环境变量设置，避免硬编码
+BARK_KEY = os.getenv("BARK_DEVICE_KEY", "这里换成您的Bark Key")
+PLATE_NUMBER = os.getenv("PLATE_NUMBER", "京A12345")
+# ==========================
 
-from apscheduler.schedulers.blocking import BlockingScheduler
-from apscheduler.triggers.cron import CronTrigger
-
-
-async def cleanup_resources():
-    """清理应用资源"""
-    logging.info("开始清理应用资源...")
-
-    try:
-        # 关闭 MQTT 连接
-        from jjz_alert.service.homeassistant.ha_mqtt import ha_mqtt_publisher
-
-        if ha_mqtt_publisher.enabled():
-            await ha_mqtt_publisher.close()
-            logging.info("MQTT 连接已关闭")
-    except Exception as e:
-        logging.error(f"关闭 MQTT 连接时出错: {e}")
-
-    try:
-        # 关闭 Redis 连接
-        from jjz_alert.config.redis.connection import close_redis
-
-        await close_redis()
-        logging.info("Redis 连接已关闭")
-    except Exception as e:
-        logging.error(f"关闭 Redis 连接时出错: {e}")
-
-    try:
-        # 关闭 Home Assistant 客户端
-        from jjz_alert.service.homeassistant.ha_client import close_ha_client
-
-        await close_ha_client()
-        logging.info("Home Assistant 客户端已关闭")
-    except Exception as e:
-        logging.error(f"关闭 Home Assistant 客户端时出错: {e}")
-
-    logging.info("应用资源清理完成")
-
-
-def signal_handler(signum, frame):
-    """信号处理器"""
-    logging.info(f"接收到信号 {signum}，开始清理资源...")
-    try:
-        # 创建新的事件循环来运行清理函数
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(cleanup_resources())
-        loop.close()
-    except Exception as e:
-        logging.error(f"清理资源时出错: {e}")
-    finally:
-        sys.exit(0)
-
-
-async def main():
+def get_today_restriction():
     """
-    主函数 - 使用统一的推送服务处理进京证查询和推送
+    查询北京今日限行尾号
+    返回：dict，包含限行信息
     """
-    logging.info("开始执行进京证查询和推送任务")
-
-    # 初始化消息模板配置
-    from jjz_alert.base.message_templates import initialize_templates_from_config
-    from jjz_alert.config.config import config_manager
-
-    initialize_templates_from_config(config_manager)
-
-    # 使用统一的推送服务
-    from jjz_alert.service.notification.jjz_push_service import jjz_push_service
-
-    try:
-        # 执行完整的推送工作流
-        result = await jjz_push_service.push_all_plates()
-
-        # 记录执行结果
-        if result["success"]:
-            logging.info(
-                f"推送任务执行成功: {result['success_plates']}/{result['total_plates']} 个车牌推送成功"
-            )
-        else:
-            logging.error(
-                f"推送任务执行失败: {result['failed_plates']}/{result['total_plates']} 个车牌推送失败"
-            )
-
-        # 记录错误信息
-        if result["errors"]:
-            for error in result["errors"]:
-                logging.error(f"推送过程中的错误: {error}")
-
-        # 记录HA同步结果
-        if result["ha_sync_result"]:
-            ha_result = result["ha_sync_result"]
-            success_count = ha_result.get("success_plates", 0)
-            total_count = ha_result.get("total_plates", 0)
-            if success_count > 0:
-                logging.info(
-                    f"Home Assistant同步完成: {success_count}/{total_count} 车牌成功"
-                )
-            else:
-                logging.warning(
-                    f"Home Assistant同步失败: {ha_result.get('errors', [])}"
-                )
-
-        logging.info("所有任务执行完成")
-
-    except Exception as e:
-        logging.error(f"主函数执行异常: {e}")
-        raise
-
-
-def schedule_jobs():
-    # 在主线程中注册信号处理器
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-
-    # 配置作业默认行为：允许最多 2 个并发实例，并开启合并以避免错过时段累积触发
-    scheduler = BlockingScheduler(
-        job_defaults={
-            "max_instances": 2,
-            "coalesce": True,
+    today = date.today()
+    weekday = today.weekday()  # 0=周一, 6=周日
+    
+    # 周末不限行
+    if weekday >= 5:  # 周六(5)或周日(6)
+        return {
+            "date": today.isoformat(),
+            "weekday": ["周一","周二","周三","周四","周五","周六","周日"][weekday],
+            "is_restricted": False,
+            "message": "今天是周末，不限行！"
         }
-    )
-    # 使用全局配置管理器实例
-    from jjz_alert.config.config import config_manager
+    
+    # 北京限行规则（2025年最新）
+    # 周一至周五，每天限行两个尾号
+    restriction_rules = {
+        0: (3, 8),    # 周一限行 3 和 8
+        1: (4, 9),    # 周二限行 4 和 9
+        2: (5, 0),    # 周三限行 5 和 0
+        3: (1, 6),    # 周四限行 1 和 6
+        4: (2, 7),    # 周五限行 2 和 7
+    }
+    
+    # 获取今天限行尾号
+    today_restricted = restriction_rules[weekday]
+    
+    # 获取车牌尾号（取最后一位数字）
+    plate_last_char = PLATE_NUMBER[-1]
+    # 如果是非数字，尝试再往前一位
+    if not plate_last_char.isdigit():
+        for char in reversed(PLATE_NUMBER):
+            if char.isdigit():
+                plate_last_char = char
+                break
+    
+    plate_last_digit = int(plate_last_char)
+    
+    # 判断是否限行
+    is_restricted = plate_last_digit in today_restricted
+    
+    weekday_names = ["周一","周二","周三","周四","周五","周六","周日"]
+    
+    result = {
+        "date": today.isoformat(),
+        "weekday": weekday_names[weekday],
+        "restricted_digits": today_restricted,
+        "plate_last_digit": plate_last_digit,
+        "is_restricted": is_restricted,
+        "message": f"今天({today.isoformat()}) 限行尾号：{today_restricted[0]} 和 {today_restricted[1]}"
+    }
+    
+    if is_restricted:
+        result["message"] += f"\n⚠️ 您的车牌(尾号{plate_last_digit})今日限行！请勿开车上路！"
+    else:
+        result["message"] += f"\n✅ 您的车牌(尾号{plate_last_digit})今日不限行，可以正常出行。"
+    
+    return result
 
-    app_config = config_manager.load_config()
-    remind_times = (
-        app_config.global_config.remind.times
-        if app_config.global_config.remind
-        else ["08:00", "12:30", "19:00", "23:55"]
-    )
 
-    def async_main_wrapper():
-        """Wrapper to run async main function in sync scheduler with event loop isolation"""
-        # 创建新的事件循环来避免循环冲突
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+def send_bark_notification(content):
+    """
+    通过Bark推送通知
+    """
+    if not BARK_KEY or BARK_KEY == "这里换成您的Bark Key":
+        print("⚠️ Bark Key未配置，跳过推送")
+        return False
+    
+    try:
+        # Bark API地址
+        url = f"https://api.day.app/{BARK_KEY}"
+        
+        # 构建推送内容
+        payload = {
+            "title": "🚗 北京限行提醒",
+            "body": content,
+            "group": "限行提醒",
+            "sound": "alarm.caf",
+            "icon": "https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/72x72/1f697.png"
+        }
+        
+        response = requests.post(url, json=payload, timeout=10)
+        
+        if response.status_code == 200:
+            print(f"✅ Bark推送成功")
+            return True
+        else:
+            print(f"❌ Bark推送失败，状态码：{response.status_code}")
+            return False
+            
+    except Exception as e:
+        print(f"❌ Bark推送异常：{str(e)}")
+        return False
 
-        try:
-            # 在独立的事件循环中执行任务
-            loop.run_until_complete(main())
-        except Exception as e:
-            logging.error(f"定时任务执行失败: {e}")
-        finally:
-            # 清理事件循环
-            try:
-                # 确保所有任务完成
-                pending = asyncio.all_tasks(loop)
-                if pending:
-                    loop.run_until_complete(
-                        asyncio.gather(*pending, return_exceptions=True)
-                    )
-            except Exception as e:
-                logging.warning(f"清理待处理任务时出错: {e}")
-            finally:
-                loop.close()
 
-    def async_renew_only_wrapper():
-        """Wrapper 仅执行续办决策与派发，不发状态推送通知"""
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            from jjz_alert.service.jjz.renew_workflow import (
-                run_renew_only_workflow,
-            )
-
-            loop.run_until_complete(run_renew_only_workflow())
-        except Exception as e:
-            logging.error(f"自动续办兜底任务失败: {e}")
-        finally:
-            try:
-                pending = asyncio.all_tasks(loop)
-                if pending:
-                    loop.run_until_complete(
-                        asyncio.gather(*pending, return_exceptions=True)
-                    )
-            except Exception as e:
-                logging.warning(f"清理续办兜底任务时出错: {e}")
-            finally:
-                loop.close()
-
-    # 仅在提醒功能启用时注册提醒定时任务
-    remind_enabled = (
-        app_config.global_config.remind.enable
-        if app_config.global_config.remind
-        else False
-    )
-    if remind_enabled:
-        for time_str in remind_times:
-            hour, minute = map(int, time_str.split(":"))
-            trigger = CronTrigger(hour=hour, minute=minute)
-            scheduler.add_job(
-                async_main_wrapper,
-                trigger,
-                misfire_grace_time=None,
-                max_instances=2,
-            )
-            logging.info(f"已添加定时任务: 每天 {hour:02d}:{minute:02d}")
-
-    # 自动续办由 remind cron 触发的查询流程驱动（参见 renew_decider + renew_trigger），
-    # 不再注册独立的 cron 任务。
-
-    has_auto_renew_plates = any(
-        p.auto_renew and p.auto_renew.enabled for p in app_config.plates
-    )
-    # 判断 remind.times 中是否已有凌晨（00:00-04:00）时刻；
-    # 若无且启用了自动续办，注册 00:30 兜底 cron——确保 23:55 触发后
-    # 北京交管放号失败的车辆能在凌晨重试，不必等到次日白天 remind
-    has_post_midnight_remind = remind_enabled and any(
-        int(t.split(":")[0]) < 4 for t in remind_times if ":" in t
-    )
-    if has_auto_renew_plates and not has_post_midnight_remind:
-        scheduler.add_job(
-            async_renew_only_wrapper,
-            CronTrigger(hour=0, minute=30),
-            misfire_grace_time=3600,
-            max_instances=1,
-        )
-        logging.info(
-            "已注册自动续办凌晨兜底任务: 每天 00:30"
-            "（仅决策+派发续办，不推送状态通知）"
-        )
-
-    logging.info("定时任务调度器启动")
-    scheduler.start()
+def main():
+    """
+    主函数：查询限行并推送
+    """
+    print(f"🕐 当前时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"📋 车牌号：{PLATE_NUMBER}")
+    print("=" * 40)
+    
+    # 获取限行信息
+    result = get_today_restriction()
+    
+    # 打印结果
+    print(f"📅 日期：{result['date']} ({result['weekday']})")
+    print(result['message'])
+    print("=" * 40)
+    
+    # 推送通知
+    print("\n📱 准备推送通知...")
+    send_bark_notification(result['message'])
+    
+    print("\n✅ 本次检查完成！")
+    
+    # 返回结果用于GitHub Actions日志
+    return result
 
 
 if __name__ == "__main__":
-    from threading import Thread
-
-    # 获取配置
-    from jjz_alert.config.config import config_manager
-
-    app_config = config_manager.load_config()
-    remind_enabled = (
-        app_config.global_config.remind.enable
-        if app_config.global_config.remind
-        else False
-    )
-    api_enabled = (
-        app_config.global_config.remind.api.enable
-        if (app_config.global_config.remind and app_config.global_config.remind.api)
-        else False
-    )
-
-    # 若提醒功能开启，同时满足 API 开关，则后台启动 REST API
-    if remind_enabled and api_enabled:
-        try:
-            from rest_api import run_api
-
-            api_thread = Thread(target=run_api, daemon=True)
-            api_thread.start()
-            logging.info("已在后台启动 REST API 服务")
-        except ImportError:
-            logging.warning("REST API 模块不可用，跳过API服务启动")
-
-    has_auto_renew = any(
-        p.auto_renew and p.auto_renew.enabled for p in app_config.plates
-    )
-
-    if remind_enabled or has_auto_renew:
-        # 启动定时任务（阻塞）—— remind 触发查询并按需派发续办
-        schedule_jobs()
-    else:
-        # 仅执行一次查询
-        asyncio.run(main())
+    main()
