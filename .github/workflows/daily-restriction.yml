@@ -26,5 +26,6 @@ jobs:
         env:
           BARK_KEY: ${{ secrets.BARK_KEY }}
           PLATE_NUMBER: ${{ secrets.PLATE_NUMBER }}
+          SENIVERSE_API_KEY: ${{ secrets.SENIVERSE_API_KEY }}
         run: |
           python main.py
