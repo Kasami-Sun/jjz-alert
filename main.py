@@ -24,7 +24,7 @@ def get_restriction_from_api():
             # 解析 "3和8" 这种格式
             digits = restriction.replace("和", "").replace("与", "").replace("、", "")
             if len(digits) >= 2 and digits[0].isdigit() and digits[1].isdigit():
-                plates = (int(digits[0](@ref), int(digits[1](@ref))
+                plates = (int(digits), int(digits))
                 print(f"✅ 获取到今日限行尾号：{plates[0]} 和 {plates[1]}")
                 return plates
         
