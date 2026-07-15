@@ -4,14 +4,17 @@ from datetime import date
 
 BARK_KEY = os.getenv("BARK_KEY")
 PLATE_NUMBER = os.getenv("PLATE_NUMBER")
+SENIVERSE_API_KEY = os.getenv("SENIVERSE_API_KEY")  # ✅ 从环境变量读取，不是硬编码
 
-# 心知天气 API 配置
-SENIVERSE_API_KEY = "你的API Key"  # ← 把这里替换成你刚申请的Key
 SENIVERSE_URL = "https://api.seniverse.com/v3/life/driving_restriction.json"
-BEIJING_LOCATION = "WX4FBXXFKE4F"  # 北京的固定位置ID
+BEIJING_LOCATION = "WX4FBXXFKE4F"
 
 def get_restriction_from_api():
     """从心知天气API获取今日限行信息"""
+    if not SENIVERSE_API_KEY or SENIVERSE_API_KEY == "你的API Key":
+        print("❌ 未配置 SENIVERSE_API_KEY")
+        return None
+
     params = {
         "key": SENIVERSE_API_KEY,
         "location": BEIJING_LOCATION
@@ -19,19 +22,28 @@ def get_restriction_from_api():
     
     try:
         response = requests.get(SENIVERSE_URL, params=params, timeout=10)
-        response.raise_for_status()
         data = response.json()
         
-        # 解析返回结果
+        # ✅ 打印原始返回数据用于调试
+        print(f"📡 API返回数据：{data}")
+        
+        # 检查是否有错误
+        if "status_code" in data:
+            print(f"❌ API返回错误：{data}")
+            return None
+        
+        # ✅ 心知天气免费版返回格式
+        # {"results":[{"restriction":{"limits":[{"date":"...","plates":["3","8"]}]}}]} 
         limits = data["results"]["restriction"]["limits"]
         today = date.today().isoformat()
         
         for limit in limits:
             if limit["date"] == today:
                 plates = [int(p) for p in limit["plates"]]
+                print(f"✅ 获取到今日限行尾号：{plates}")
                 return tuple(plates)
         
-        # 如果没找到今天的（比如周末），返回None
+        print("ℹ️ 今日没有限行数据（可能周末）")
         return None
     except Exception as e:
         print(f"⚠️ API查询失败：{e}")
@@ -42,7 +54,7 @@ def get_plate_last_digit(plate_number):
     for ch in reversed(plate_number):
         if ch.isdigit():
             return int(ch)
-    return 0  # 如果全是字母则按0处理
+    return 0
 
 def send_bark_notification(message):
     """发送Bark通知"""
@@ -87,7 +99,7 @@ def main():
     
     if restricted_digits is None:
         print("❌ API查询失败，无法获取限行信息")
-        send_bark_notification(f"⚠️ 今日限行信息获取失败，请手动查询！")
+        send_bark_notification("⚠️ 今日限行信息获取失败，请手动查询！")
         return
     
     # 获取车牌尾号
