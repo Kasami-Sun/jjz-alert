@@ -2,22 +2,18 @@ import os
 import requests
 import re
 from datetime import date
-from bs4 import BeautifulSoup
 
 BARK_KEY = os.getenv("BARK_KEY")
 PLATE_NUMBER = os.getenv("PLATE_NUMBER")
 
 def get_restriction_from_web():
-    """从北京交警官网抓取今日限行信息"""
+    """从北京交警官网抓取今日限行信息（纯正则，无额外依赖）"""
     
-    # 尝试多个数据源
     urls = [
         "https://www.bjjtgl.gov.cn",
         "https://jtgl.beijing.gov.cn",
         "https://www.beijing.gov.cn"
     ]
-    
-    today = date.today()
     
     for url in urls:
         try:
@@ -29,12 +25,11 @@ def get_restriction_from_web():
             response.encoding = 'utf-8'
             text = response.text
             
-            # 方法1：用正则匹配"限行尾号 X 和 X"
+            # 用正则匹配"限行尾号 X 和 X"
             patterns = [
-                rf"{today.month}月{today.day}日.*?限行尾号[：:]\s*(\d)\s*[和与至\-]\s*(\d)",
-                rf"限行尾号[：:]\s*(\d)\s*[和与至\-]\s*(\d)",
-                rf"尾号[：:]\s*(\d)\s*[和与至\-]\s*(\d)",
-                rf"限行[：:]\s*(\d)\s*[和与至\-]\s*(\d)",
+                r"限行尾号[：:]\s*(\d)\s*[和与至\-]\s*(\d)",
+                r"尾号[：:]\s*(\d)\s*[和与至\-]\s*(\d)",
+                r"限行[：:]\s*(\d)\s*[和与至\-]\s*(\d)",
             ]
             
             for pattern in patterns:
@@ -43,18 +38,6 @@ def get_restriction_from_web():
                     digits = (int(match.group(1)), int(match.group(2)))
                     print(f"✅ 从网页抓取到今日限行尾号：{digits[0]} 和 {digits[1]}")
                     return digits
-            
-            # 方法2：用BeautifulSoup解析页面
-            soup = BeautifulSoup(text, 'html.parser')
-            # 查找包含"限行"关键字的文本
-            for tag in soup.find_all(['p', 'span', 'div', 'li']):
-                if tag.text and '限行' in tag.text:
-                    text = tag.text.strip()
-                    match = re.search(r'(\d)\s*[和与至\-]\s*(\d)', text)
-                    if match:
-                        digits = (int(match.group(1)), int(match.group(2)))
-                        print(f"✅ 从页面解析到限行尾号：{digits[0]} 和 {digits[1]}")
-                        return digits
             
             print(f"⚠️ {url} 未找到限行信息")
             
