@@ -3,7 +3,7 @@ import requests
 from datetime import date
 
 # Bark 秘钥和车牌号
-BARK_KEY = os.getenv("BARK_DEVICE_KEY", "")
+BARK_KEY = os.getenv("BARK_KEY", "")
 PLATE_NUMBER = os.getenv("PLATE_NUMBER", "京A12345")
 
 # 北京限行规则（2025年最新）
