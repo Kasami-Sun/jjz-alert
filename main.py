@@ -1,65 +1,78 @@
 import os
 import requests
-import re
 from datetime import date
 
-BARK_KEY = os.getenv("BARK_KEY")
-PLATE_NUMBER = os.getenv("PLATE_NUMBER")
+# Bark 秘钥和车牌号
+BARK_KEY = os.getenv("BARK_KEY", "")
+PLATE_NUMBER = os.getenv("PLATE_NUMBER", "京A12345")
 
-def get_restriction_from_web():
-    """从北京交警官网抓取今日限行信息（纯正则，无额外依赖）"""
-    
-    urls = [
-        "https://www.bjjtgl.gov.cn",
-        "https://jtgl.beijing.gov.cn",
-        "https://www.beijing.gov.cn"
-    ]
-    
-    for url in urls:
-        try:
-            print(f"🌐 正在从 {url} 获取限行信息...")
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-            }
-            response = requests.get(url, headers=headers, timeout=15)
-            response.encoding = 'utf-8'
-            text = response.text
-            
-            # 用正则匹配"限行尾号 X 和 X"
-            patterns = [
-                r"限行尾号[：:]\s*(\d)\s*[和与至\-]\s*(\d)",
-                r"尾号[：:]\s*(\d)\s*[和与至\-]\s*(\d)",
-                r"限行[：:]\s*(\d)\s*[和与至\-]\s*(\d)",
-            ]
-            
-            for pattern in patterns:
-                match = re.search(pattern, text)
-                if match:
-                    digits = (int(match.group(1)), int(match.group(2)))
-                    print(f"✅ 从网页抓取到今日限行尾号：{digits[0]} 和 {digits[1]}")
-                    return digits
-            
-            print(f"⚠️ {url} 未找到限行信息")
-            
-        except Exception as e:
-            print(f"⚠️ 访问 {url} 失败：{e}")
-    
-    print("❌ 所有数据源都无法获取限行信息")
-    return None
+# 北京限行规则（2025年最新）
+RESTRICTION_RULES = {
+    0: (1, 6),   # 周一
+    1: (2, 7),   # 周二
+    2: (3, 8),   # 周三
+    3: (4, 9),   # 周四
+    4: (5, 0),   # 周五
+    5: None,     # 周六不限行
+    6: None      # 周日不限行
+}
 
-def get_plate_last_digit(plate_number):
-    """提取车牌最后一位数字"""
-    for ch in reversed(plate_number):
-        if ch.isdigit():
-            return int(ch)
-    return 0
+WEEKDAY_NAMES = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+
+def get_today_restriction_info():
+    """获取今日限行信息"""
+    today = date.today()
+    weekday = today.weekday()
+    weekday_name = WEEKDAY_NAMES[weekday]
+
+    info = {
+        "date": today.isoformat(),
+        "weekday": weekday_name,
+        "restricted_digits": None,
+        "plate_last_digit": None,
+        "is_restricted": False,
+        "message": ""
+    }
+
+    # 周末不限行
+    if weekday >= 5:
+        info["message"] = f"今日 {today.isoformat()}（{weekday_name}）不限行。"
+        return info
+
+    # 获取限行尾号
+    restricted_digits = RESTRICTION_RULES[weekday]
+
+    # 提取车牌最后一位数字
+    plate_last_char = PLATE_NUMBER[-1]
+    if not plate_last_char.isdigit():
+        for ch in PLATE_NUMBER[::-1]:
+            if ch.isdigit():
+                plate_last_char = ch
+                break
+    plate_last_digit = int(plate_last_char)
+
+    # 判断是否限行
+    is_restricted = plate_last_digit in restricted_digits
+
+    info["restricted_digits"] = restricted_digits
+    info["plate_last_digit"] = plate_last_digit
+    info["is_restricted"] = is_restricted
+
+    # 生成消息
+    base_msg = f"今日 {today.isoformat()}（{weekday_name}）\n限行尾号：{restricted_digits[0]} 和 {restricted_digits[1]}"
+    if is_restricted:
+        info["message"] = f"{base_msg}\n⚠️ 您的车牌（尾号 {plate_last_digit}）今日限行，请勿上路！"
+    else:
+        info["message"] = f"{base_msg}\n✅ 您的车牌（尾号 {plate_last_digit}）今日不限行。"
+
+    return info
 
 def send_bark_notification(message):
-    """发送Bark通知"""
+    """发送 Bark 通知"""
     if not BARK_KEY:
         print("⚠️ 未配置 BARK_KEY，跳过推送")
-        return
-    
+        return False
+
     url = f"https://api.day.app/{BARK_KEY}"
     payload = {
         "title": "🚗 北京限行提醒",
@@ -67,64 +80,32 @@ def send_bark_notification(message):
         "group": "限行提醒",
         "sound": "alarm.caf"
     }
-    
+
     try:
         resp = requests.post(url, json=payload, timeout=10)
         if resp.status_code == 200:
             print("✅ Bark 推送成功")
+            return True
         else:
             print(f"❌ Bark 推送失败，状态码：{resp.status_code}")
+            return False
     except Exception as e:
         print(f"❌ Bark 推送出错：{e}")
+        return False
 
 def main():
-    print("=" * 50)
-    today = date.today()
-    weekday = today.weekday()
-    weekdays = ["一", "二", "三", "四", "五", "六", "日"]
-    
-    print(f"📅 {today.isoformat()} 星期{weekdays[weekday]}")
-    
-    # 周末直接结束
-    if weekday >= 5:
-        print("🎉 今天是周末，不限行！")
-        send_bark_notification(f"今日{today.isoformat()}（周六/日）不限行，祝您周末愉快！")
-        return
-    
-    # 从网页抓取限行信息
-    print("🔍 正在从北京交警官网抓取限行数据...")
-    restricted_digits = get_restriction_from_web()
-    
-    if restricted_digits is None:
-        print("❌ 网页抓取失败，无法获取限行信息")
-        send_bark_notification("⚠️ 今日限行信息获取失败，请手动查询！")
-        return
-    
-    # 获取车牌尾号
-    plate_last_digit = get_plate_last_digit(PLATE_NUMBER)
-    
-    # 判断是否限行
-    is_restricted = plate_last_digit in restricted_digits
-    
-    # 构建消息
-    restriction_msg = f"今日限行尾号：{restricted_digits[0]} 和 {restricted_digits[1]}"
-    plate_msg = f"您的车牌尾号：{plate_last_digit}"
-    
-    if is_restricted:
-        status_msg = "⚠️ 今日限行，请勿开车上路！"
-    else:
-        status_msg = "✅ 今日不限行，可正常出行"
-    
-    full_message = f"{today.isoformat()} 星期{weekdays[weekday]}\n{restriction_msg}\n{plate_msg}\n{status_msg}"
-    
-    print(f"📌 {restriction_msg}")
-    print(f"🚗 {plate_msg}")
-    print(f"📢 {status_msg}")
-    print("=" * 50)
-    
-    # 发送通知
-    print("\n📱 正在推送Bark通知...")
-    send_bark_notification(full_message)
+    print("=" * 40)
+    info = get_today_restriction_info()
+
+    print(f"📅 {info['date']}（{info['weekday']}）")
+    if info["restricted_digits"]:
+        print(f"🔢 今日限行尾号：{info['restricted_digits'][0]} 和 {info['restricted_digits'][1]}")
+    print(f"🚗 车牌尾号：{info['plate_last_digit']}")
+    print(f"📢 {info['message']}")
+    print("=" * 40)
+
+    print("\n📱 正在推送 Bark 通知...")
+    send_bark_notification(info["message"])
     print("✅ 本次检查完成。")
 
 if __name__ == "__main__":
