@@ -4,46 +4,31 @@ from datetime import date
 
 BARK_KEY = os.getenv("BARK_KEY")
 PLATE_NUMBER = os.getenv("PLATE_NUMBER")
-SENIVERSE_API_KEY = os.getenv("SENIVERSE_API_KEY")  # ✅ 从环境变量读取，不是硬编码
 
-SENIVERSE_URL = "https://api.seniverse.com/v3/life/driving_restriction.json"
-BEIJING_LOCATION = "WX4FBXXFKE4F"
+# 免费限行查询API（无需Key）
+RESTRICTION_API_URL = "https://api.iyk0.com/weihao/"
 
 def get_restriction_from_api():
-    """从心知天气API获取今日限行信息"""
-    if not SENIVERSE_API_KEY or SENIVERSE_API_KEY == "你的API Key":
-        print("❌ 未配置 SENIVERSE_API_KEY")
-        return None
-
-    params = {
-        "key": SENIVERSE_API_KEY,
-        "location": BEIJING_LOCATION
-    }
+    """从免费API获取今日限行信息"""
+    params = {"city": "北京"}
     
     try:
-        response = requests.get(SENIVERSE_URL, params=params, timeout=10)
+        print(f"🌐 正在请求免费限行API...")
+        response = requests.get(RESTRICTION_API_URL, params=params, timeout=10)
         data = response.json()
         
-        # ✅ 打印原始返回数据用于调试
         print(f"📡 API返回数据：{data}")
         
-        # 检查是否有错误
-        if "status_code" in data:
-            print(f"❌ API返回错误：{data}")
-            return None
+        if data.get("code") == 200:
+            restriction = data.get("restriction", "")
+            # 解析 "3和8" 这种格式
+            digits = restriction.replace("和", "").replace("与", "").replace("、", "")
+            if len(digits) >= 2 and digits[0].isdigit() and digits[1].isdigit():
+                plates = (int(digits[0](@ref), int(digits[1](@ref))
+                print(f"✅ 获取到今日限行尾号：{plates[0]} 和 {plates[1]}")
+                return plates
         
-        # ✅ 心知天气免费版返回格式
-        # {"results":[{"restriction":{"limits":[{"date":"...","plates":["3","8"]}]}}]} 
-        limits = data["results"]["restriction"]["limits"]
-        today = date.today().isoformat()
-        
-        for limit in limits:
-            if limit["date"] == today:
-                plates = [int(p) for p in limit["plates"]]
-                print(f"✅ 获取到今日限行尾号：{plates}")
-                return tuple(plates)
-        
-        print("ℹ️ 今日没有限行数据（可能周末）")
+        print("⚠️ 未能解析限行数据")
         return None
     except Exception as e:
         print(f"⚠️ API查询失败：{e}")
@@ -94,7 +79,7 @@ def main():
         return
     
     # 从API获取限行信息
-    print("🌐 正在从心知天气获取实时限行数据...")
+    print("🔍 正在获取北京今日限行尾号...")
     restricted_digits = get_restriction_from_api()
     
     if restricted_digits is None:
