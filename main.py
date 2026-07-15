@@ -6,7 +6,7 @@ BARK_KEY = os.getenv("BARK_KEY")
 PLATE_NUMBER = os.getenv("PLATE_NUMBER")
 
 # 免费限行查询API（无需Key）
-RESTRICTION_API_URL = "https://api.wolfx.cn/weihao/"
+RESTRICTION_API_URL = "https://api.02-7.cn/weihao/"
 
 def get_restriction_from_api():
     """从免费API获取今日限行信息"""
