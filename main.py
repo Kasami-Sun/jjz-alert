@@ -1,38 +1,68 @@
 import os
 import requests
+import re
 from datetime import date
+from bs4 import BeautifulSoup
 
 BARK_KEY = os.getenv("BARK_KEY")
 PLATE_NUMBER = os.getenv("PLATE_NUMBER")
 
-# 免费限行查询API（无需Key）
-RESTRICTION_API_URL = "https://api.02-7.cn/weihao/"
-
-def get_restriction_from_api():
-    """从免费API获取今日限行信息"""
-    params = {"city": "北京"}
+def get_restriction_from_web():
+    """从北京交警官网抓取今日限行信息"""
     
-    try:
-        print(f"🌐 正在请求免费限行API...")
-        response = requests.get(RESTRICTION_API_URL, params=params, timeout=10)
-        data = response.json()
-        
-        print(f"📡 API返回数据：{data}")
-        
-        if data.get("code") == 200:
-            restriction = data.get("restriction", "")
-            # 解析 "3和8" 这种格式
-            digits = restriction.replace("和", "").replace("与", "").replace("、", "")
-            if len(digits) >= 2 and digits[0].isdigit() and digits[1].isdigit():
-                plates = (int(digits), int(digits))
-                print(f"✅ 获取到今日限行尾号：{plates[0]} 和 {plates[1]}")
-                return plates
-        
-        print("⚠️ 未能解析限行数据")
-        return None
-    except Exception as e:
-        print(f"⚠️ API查询失败：{e}")
-        return None
+    # 尝试多个数据源
+    urls = [
+        "https://www.bjjtgl.gov.cn",
+        "https://jtgl.beijing.gov.cn",
+        "https://www.beijing.gov.cn"
+    ]
+    
+    today = date.today()
+    
+    for url in urls:
+        try:
+            print(f"🌐 正在从 {url} 获取限行信息...")
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            }
+            response = requests.get(url, headers=headers, timeout=15)
+            response.encoding = 'utf-8'
+            text = response.text
+            
+            # 方法1：用正则匹配"限行尾号 X 和 X"
+            patterns = [
+                rf"{today.month}月{today.day}日.*?限行尾号[：:]\s*(\d)\s*[和与至\-]\s*(\d)",
+                rf"限行尾号[：:]\s*(\d)\s*[和与至\-]\s*(\d)",
+                rf"尾号[：:]\s*(\d)\s*[和与至\-]\s*(\d)",
+                rf"限行[：:]\s*(\d)\s*[和与至\-]\s*(\d)",
+            ]
+            
+            for pattern in patterns:
+                match = re.search(pattern, text)
+                if match:
+                    digits = (int(match.group(1)), int(match.group(2)))
+                    print(f"✅ 从网页抓取到今日限行尾号：{digits[0]} 和 {digits[1]}")
+                    return digits
+            
+            # 方法2：用BeautifulSoup解析页面
+            soup = BeautifulSoup(text, 'html.parser')
+            # 查找包含"限行"关键字的文本
+            for tag in soup.find_all(['p', 'span', 'div', 'li']):
+                if tag.text and '限行' in tag.text:
+                    text = tag.text.strip()
+                    match = re.search(r'(\d)\s*[和与至\-]\s*(\d)', text)
+                    if match:
+                        digits = (int(match.group(1)), int(match.group(2)))
+                        print(f"✅ 从页面解析到限行尾号：{digits[0]} 和 {digits[1]}")
+                        return digits
+            
+            print(f"⚠️ {url} 未找到限行信息")
+            
+        except Exception as e:
+            print(f"⚠️ 访问 {url} 失败：{e}")
+    
+    print("❌ 所有数据源都无法获取限行信息")
+    return None
 
 def get_plate_last_digit(plate_number):
     """提取车牌最后一位数字"""
@@ -78,12 +108,12 @@ def main():
         send_bark_notification(f"今日{today.isoformat()}（周六/日）不限行，祝您周末愉快！")
         return
     
-    # 从API获取限行信息
-    print("🔍 正在获取北京今日限行尾号...")
-    restricted_digits = get_restriction_from_api()
+    # 从网页抓取限行信息
+    print("🔍 正在从北京交警官网抓取限行数据...")
+    restricted_digits = get_restriction_from_web()
     
     if restricted_digits is None:
-        print("❌ API查询失败，无法获取限行信息")
+        print("❌ 网页抓取失败，无法获取限行信息")
         send_bark_notification("⚠️ 今日限行信息获取失败，请手动查询！")
         return
     
